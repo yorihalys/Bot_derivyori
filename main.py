@@ -265,3 +265,18 @@ if __name__ == "__main__":
     threading.Thread(target=tarea_periodica, daemon=True).start()
     threading.Thread(target=iniciar_websocket, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
+# ENVÍO DE MENSAJE DE PRUEBA AL INICIAR EL BOT
+import requests
+
+TELEGRAM_BOT_TOKEN = '7996503475:AAG6mEPhRF5TlK_syTzmhKYWV_2ETpGkRXU'
+TELEGRAM_CHANNEL = '@yorihaly18'
+
+mensaje = "✅ *El bot de Deriv está activo y listo para enviar señales.*"
+
+url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+data = {"chat_id": TELEGRAM_CHANNEL, "text": mensaje, "parse_mode": "Markdown"}
+
+try:
+    requests.post(url, data=data)
+except Exception as e:
+    print(f"❌ Error enviando mensaje de prueba: {e}")

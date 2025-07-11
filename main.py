@@ -27,6 +27,16 @@ tz_venezuela = pytz.timezone("America/Caracas")
 
 app = Flask(__name__)
 
+# Lista de activos para suscribirse y operar
+ACTIVOS = [
+    "BOOM100", "BOOM300", "BOOM500", "BOOM600",
+    "CRASH100", "CRASH300", "CRASH500", "CRASH600",
+    "VOLATILITY10", "VOLATILITY25", "VOLATILITY50", "VOLATILITY75"
+]
+
+# Diccionario para almacenar precios por activo
+precios_activos = {activo: [] for activo in ACTIVOS}
+
 # Variables globales
 ganancias_del_dia = 0.0
 operaciones_abiertas = {}
@@ -105,12 +115,9 @@ def calcular_rsi(datos, periodo=14):
             rs = promedio_ganancia / promedio_perdida
             rsi.append(100 - (100 / (1 + rs)))
 
-    # Agregar None para primeros valores sin cálculo
     return [None]*(periodo) + rsi
 
 # ----- Análisis de señales y operaciones -----
-
-precios_crash500 = []
 
 def abrir_operacion(simbolo, direccion, volumen, duracion=5):
     global ganancias_del_dia, operaciones_abiertas
@@ -164,8 +171,6 @@ def cerrar_operacion(simbolo):
         enviar_telegram(f"🎯 *Meta diaria alcanzada:* ${META_DIARIA}.\nBot detiene operaciones por hoy.")
 
 def analizar_y_operar():
-    global precios_crash500
-
     if not esta_en_horario():
         print("No está en horario operativo, bot en modo descanso.")
         return
@@ -174,51 +179,49 @@ def analizar_y_operar():
         print("Meta diaria alcanzada, no se abrirán más operaciones hoy.")
         return
 
-    # Necesitamos mínimo 20 precios para indicadores
-    if len(precios_crash500) < 20:
-        print("Esperando datos suficientes para análisis...")
-        return
+    for simbolo in ACTIVOS:
+        precios = precios_activos[simbolo]
 
-    # Calcular EMA y RSI
-    ema = calcular_ema(precios_crash500, 14)
-    rsi = calcular_rsi(precios_crash500, 14)
+        if len(precios) < 20:
+            print(f"Esperando datos suficientes para análisis de {simbolo}...")
+            continue
 
-    ultimo_precio = precios_crash500[-1]
-    ultima_ema = ema[-1]
-    ultimo_rsi = rsi[-1]
+        ema = calcular_ema(precios, 14)
+        rsi = calcular_rsi(precios, 14)
 
-    # Verificar condiciones para abrir operación
-    if ultima_ema is None or ultimo_rsi is None:
-        print("Indicadores no calculados aún.")
-        return
+        ultimo_precio = precios[-1]
+        ultima_ema = ema[-1]
+        ultimo_rsi = rsi[-1]
 
-    # Lógica para CALL (compra)
-    if ultimo_precio > ultima_ema and 30 < ultimo_rsi < 70:
-        direccion = "CALL"
-    # Lógica para PUT (venta)
-    elif ultimo_precio < ultima_ema and 30 < ultimo_rsi < 70:
-        direccion = "PUT"
-    else:
-        print("Condiciones de entrada no cumplidas.")
-        return
+        if ultima_ema is None or ultimo_rsi is None:
+            print(f"Indicadores no calculados aún para {simbolo}.")
+            continue
 
-    simbolo = "CRASH500"
+        if ultimo_precio > ultima_ema and 30 < ultimo_rsi < 70:
+            direccion = "CALL"
+        elif ultimo_precio < ultima_ema and 30 < ultimo_rsi < 70:
+            direccion = "PUT"
+        else:
+            print(f"Condiciones de entrada no cumplidas para {simbolo}.")
+            continue
 
-    with lock:
-        if simbolo not in operaciones_abiertas:
-            abrir_operacion(simbolo, direccion, VOLUMEN_FIJO)
+        with lock:
+            if simbolo not in operaciones_abiertas:
+                abrir_operacion(simbolo, direccion, VOLUMEN_FIJO)
 
 # ----- WebSocket para datos en vivo -----
 
 def on_message(ws, message):
-    global precios_crash500
     data = json.loads(message)
 
     if "tick" in data:
+        simbolo = data["tick"]["symbol"]
         precio = data["tick"]["quote"]
-        precios_crash500.append(precio)
-        if len(precios_crash500) > 100:
-            precios_crash500.pop(0)
+
+        if simbolo in precios_activos:
+            precios_activos[simbolo].append(precio)
+            if len(precios_activos[simbolo]) > 100:
+                precios_activos[simbolo].pop(0)
 
 def on_error(ws, error):
     print(f"Error WebSocket: {error}")
@@ -229,16 +232,17 @@ def on_close(ws, close_status_code, close_msg):
     iniciar_websocket()
 
 def on_open(ws):
-    print("WebSocket conectado, suscribiendo ticks Crash 500...")
+    print("WebSocket conectado, suscribiendo ticks de activos...")
     auth_msg = {
         "authorize": DERIV_TOKEN
     }
     ws.send(json.dumps(auth_msg))
 
-    subscribe_msg = {
-        "ticks": "CRASH500"
-    }
-    ws.send(json.dumps(subscribe_msg))
+    for activo in ACTIVOS:
+        subscribe_msg = {
+            "ticks": activo
+        }
+        ws.send(json.dumps(subscribe_msg))
 
 def iniciar_websocket():
     url = "wss://ws.binaryws.com/websockets/v3?app_id=1089"
@@ -262,16 +266,19 @@ def tarea_periodica():
         time.sleep(300)  # Cada 5 minutos
 
 if __name__ == "__main__":
-    # Enviar mensaje de prueba al iniciar
-    mensaje = "✅ *El bot de Deriv está activo y listo para enviar señales.*"
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHANNEL, "text": mensaje, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, data=data)
-        print("✅ Mensaje de prueba enviado a Telegram.")
-    except Exception as e:
-        print(f"❌ Error enviando mensaje de prueba: {e}")
-
     threading.Thread(target=tarea_periodica, daemon=True).start()
     threading.Thread(target=iniciar_websocket, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
+
+# ENVÍO DE MENSAJE DE PRUEBA AL INICIAR EL BOT
+import requests
+
+mensaje = "✅ *El bot de Deriv está activo y listo para enviar señales.*"
+
+url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+data = {"chat_id": TELEGRAM_CHANNEL, "text": mensaje, "parse_mode": "Markdown"}
+
+try:
+    requests.post(url, data=data)
+except Exception as e:
+    print(f"❌ Error enviando mensaje de prueba: {e}")

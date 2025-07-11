@@ -85,12 +85,12 @@ def calcular_rsi(datos, periodo=14):
     pg = sum(ganancias[:periodo]) / periodo
     pp = sum(perdidas[:periodo]) / periodo
     rs = pg / pp if pp else 0
-    rsi.append(100 - (100 / (1 + rs))) if pp else rsi.append(100)
+    rsi.append(100 - (100 / (1 + rs)) if pp else 100)
     for i in range(periodo, len(ganancias)):
         pg = (pg * (periodo - 1) + ganancias[i]) / periodo
         pp = (pp * (periodo - 1) + perdidas[i]) / periodo
         rs = pg / pp if pp else 0
-        rsi.append(100 - (100 / (1 + rs))) if pp else rsi.append(100)
+        rsi.append(100 - (100 / (1 + rs)) if pp else 100)
     return [None]*periodo + rsi
 
 # ======= TRADING ========
@@ -123,7 +123,7 @@ def cerrar_operacion(simbolo):
         if simbolo not in operaciones_abiertas:
             return
         operaciones_abiertas.pop(simbolo)
-    resultado = VOLUMEN_FIJO * 0.8
+    resultado = VOLUMEN_FIJO * 0.8  # Simulación ganancia 80%
     ganancias_del_dia += resultado
     mensaje = (
         f"✅ *Operación cerrada*\n"
@@ -169,6 +169,8 @@ def on_message(ws, message):
             precios_activos[simbolo].append(precio)
             if len(precios_activos[simbolo]) > 100:
                 precios_activos[simbolo].pop(0)
+            # Debug print para confirmar recepción de datos
+            print(f"{simbolo}: precio recibido {precio}")
 
 def on_error(ws, error):
     print("WebSocket error:", error)
@@ -206,6 +208,14 @@ def notificar_estado():
         else:
             time.sleep(30)
 
+# ======= CICLO PRINCIPAL OPERATIVO ========
+
+def ciclo_operativo():
+    while True:
+        reiniciar_ganancias_diarias()
+        analizar_y_operar()
+        time.sleep(300)  # Cada 5 minutos
+
 # ======= EJECUCIÓN ========
 
 @app.route('/')
@@ -216,5 +226,5 @@ if __name__ == "__main__":
     enviar_telegram("✅ El bot de Deriv está activo y listo para enviar señales.")
     threading.Thread(target=iniciar_websocket, daemon=True).start()
     threading.Thread(target=notificar_estado, daemon=True).start()
-    threading.Thread(target=lambda: [reiniciar_ganancias_diarias(), analizar_y_operar()] or time.sleep(300), daemon=True).start()
+    threading.Thread(target=ciclo_operativo, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)

@@ -8,6 +8,7 @@ from datetime import datetime
 from flask import Flask
 
 # ====== CONFIGURACIÓN USUARIO ======
+
 DERIV_TOKEN = "UbQVaW5F4f7DWyM"
 TELEGRAM_BOT_TOKEN = "7996503475:AAG6mEPhRF5TlK_syTzmhKYWV_2ETpGkRXU"
 TELEGRAM_CHANNEL = "@yorihaly18"
@@ -72,7 +73,7 @@ def reiniciar_ganancias_si_medio_dia():
     if ahora.hour == 0 and ahora.minute == 0:
         with lock:
             ganancias_del_dia = 0.0
-            enviar_telegram("🔄 *Reinicio diario de ganancias y operaciones*.")
+        enviar_telegram("🔄 Reinicio diario de ganancias y operaciones.")
 
 # ----- Funciones de Indicadores Técnicos -----
 
@@ -115,7 +116,7 @@ def calcular_rsi(datos, periodo=14):
             rs = promedio_ganancia / promedio_perdida
             rsi.append(100 - (100 / (1 + rs)))
 
-    return [None]*(periodo) + rsi
+    return [None] * periodo + rsi
 
 # ----- Análisis de señales y operaciones -----
 
@@ -259,25 +260,59 @@ def iniciar_websocket():
 def home():
     return "Bot de trading Deriv activo."
 
+# ----- Función para enviar estado cada hora -----
+
+def enviar_estado_hora():
+    while True:
+        ahora = ahora_venezuela()
+        minuto = ahora.minute
+        segundo = ahora.second
+
+        # Esperar hasta la próxima hora en punto
+        if minuto == 0 and segundo == 0:
+            hora_actual = ahora.hour
+            texto_hora = ahora.strftime('%I:%M %p')
+
+            if esta_en_horario():
+                mensaje = (f"🔔 *Estado del Bot:* ACTIVO y operando.\n"
+                           f"🕐 Hora Venezuela: {texto_hora}")
+            else:
+                mensaje = (f"💤 *Estado del Bot:* En descanso (fuera de horario operativo).\n"
+                           f"🕐 Hora Venezuela: {texto_hora}")
+
+            enviar_telegram(mensaje)
+            # Espera un minuto para no enviar múltiples mensajes en la misma hora
+            time.sleep(60)
+        else:
+            # Dormir 1 segundo y chequear de nuevo para sincronizar bien en la hora
+            time.sleep(1)
+
+def iniciar_monitor_estado():
+    hilo_estado = threading.Thread(target=enviar_estado_hora)
+    hilo_estado.daemon = True
+    hilo_estado.start()
+
+# ----- Tarea periódica principal -----
+
 def tarea_periodica():
     while True:
         reiniciar_ganancias_si_medio_dia()
         analizar_y_operar()
         time.sleep(300)  # Cada 5 minutos
 
+# ----- MAIN -----
+
 if __name__ == "__main__":
     threading.Thread(target=tarea_periodica, daemon=True).start()
     threading.Thread(target=iniciar_websocket, daemon=True).start()
+    iniciar_monitor_estado()
     app.run(host="0.0.0.0", port=8080)
 
-# ENVÍO DE MENSAJE DE PRUEBA AL INICIAR EL BOT
-import requests
+# ----- ENVÍO DE MENSAJE DE PRUEBA AL INICIAR EL BOT -----
 
-mensaje = "✅ *El bot de Deriv está activo y listo para enviar señales.*"
-
+mensaje = "✅ El bot de Deriv está activo y listo para enviar señales."
 url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 data = {"chat_id": TELEGRAM_CHANNEL, "text": mensaje, "parse_mode": "Markdown"}
-
 try:
     requests.post(url, data=data)
 except Exception as e:

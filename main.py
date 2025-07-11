@@ -21,12 +21,13 @@ HORARIOS_OPERACION = [
     (14, 0, 18, 0),
     (20, 0, 23, 0),
 ]
-
 ACTIVOS = [
-    "BOOM100", "BOOM300", "BOOM500", "BOOM600",
-    "CRASH100", "CRASH300", "CRASH500", "CRASH600",
-    "VOLATILITY10", "VOLATILITY25", "VOLATILITY50", "VOLATILITY75"
+    "boom_100_index", "boom_500_index", "boom_600_index",
+    "crash_100_index", "crash_500_index", "crash_600_index",
+    "volatility_10_index", "volatility_25_index",
+    "volatility_50_index", "volatility_75_index"
 ]
+
 
 precios_activos = {activo: [] for activo in ACTIVOS}
 ganancias_del_dia = 0.0

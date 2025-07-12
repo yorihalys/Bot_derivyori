@@ -1,4 +1,6 @@
-requests
-flask
-websocket-client
-pytz
+websocket-client==1.7.0
+flask==2.3.3
+requests==2.31.0
+pytz==2024.1
+numpy==1.26.4
+gunicorn==21.2.0

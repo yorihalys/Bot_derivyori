@@ -1,0 +1,11 @@
+# Bot de Trading Automático Deriv + Telegram
+
+Este es un bot automático de trading que:
+- Conecta a una cuenta real de Deriv (WebSocket).
+- Opera Boom, Crash y Volatility.
+- Envia señales reales a Telegram.
+- Opera en la nube con Flask, threading y control de meta diaria.
+
+✅ Meta diaria: $20  
+✅ Volumen base: 0.20  
+✅ Horario: 7:00 a. m. – 9:00 p. m. (hora Venezuela)

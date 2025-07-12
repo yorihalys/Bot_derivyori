@@ -2,24 +2,23 @@ import websocket
 import json
 import threading
 import time
-import pytz
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask
 
 # ======= CONFIGURACIÓN ========
-DERIV_TOKEN = "UbQVaW5F4f7DWyM"  # Tu token API de Deriv aquí
+DERIV_TOKEN = "UbQVaW5F4f7DWyM"  # Pon tu token real aquí
 TELEGRAM_BOT_TOKEN = "7996503475:AAG6mEPhRF5TlK_syTzmhKYWV_2ETpGkRXU"
 TELEGRAM_CHANNEL = "@yorihaly18"
 CAPITAL_INICIAL = 22.0
 META_DIARIA = 20.0
 VOLUMEN_FIJO = 0.20  # apuesta fija en USD
-tz_venezuela = pytz.timezone("America/Caracas")
 
-HORARIOS_OPERACION = [
-    (6, 0, 11, 0),
-    (14, 0, 18, 0),
-    (20, 0, 23, 0),
+# Horarios en UTC (ejemplo equivalentes a 6-11, 14-18, 20-23 hora Venezuela)
+HORARIOS_OPERACION_UTC = [
+    (10, 0, 15, 0),  # 6-11 Venezuela = 10-15 UTC
+    (18, 0, 22, 0),  # 14-18 Venezuela = 18-22 UTC
+    (0, 0, 3, 0),    # 20-23 Venezuela = 00-03 UTC siguiente día
 ]
 
 ACTIVOS = [
@@ -30,25 +29,29 @@ ACTIVOS = [
 
 precios_activos = {activo: [] for activo in ACTIVOS}
 ganancias_del_dia = 0.0
-operaciones_abiertas = {}  # Guardará datos de contratos abiertos
+operaciones_abiertas = {}
 lock = threading.Lock()
 app = Flask(__name__)
 
-ws_global = None  # Guardaremos el WebSocket para enviar mensajes de compra
-
+ws_global = None  # WebSocket global para enviar órdenes
 
 # ======= FUNCIONES UTILES ========
 
-def ahora_venezuela():
-    return datetime.now(tz_venezuela)
+def ahora_utc():
+    return datetime.now(timezone.utc)
 
 def esta_en_horario():
-    ahora = ahora_venezuela()
-    for h_inicio, m_inicio, h_fin, m_fin in HORARIOS_OPERACION:
+    ahora = ahora_utc()
+    for h_inicio, m_inicio, h_fin, m_fin in HORARIOS_OPERACION_UTC:
         inicio = ahora.replace(hour=h_inicio, minute=m_inicio, second=0, microsecond=0)
         fin = ahora.replace(hour=h_fin, minute=m_fin, second=0, microsecond=0)
-        if inicio <= ahora <= fin:
-            return True
+        # Ajustar horario que cruza medianoche
+        if fin < inicio:
+            if ahora >= inicio or ahora <= fin:
+                return True
+        else:
+            if inicio <= ahora <= fin:
+                return True
     return False
 
 def enviar_telegram(mensaje):
@@ -61,7 +64,7 @@ def enviar_telegram(mensaje):
 
 def reiniciar_ganancias_diarias():
     global ganancias_del_dia
-    ahora = ahora_venezuela()
+    ahora = ahora_utc()
     if ahora.hour == 0 and ahora.minute == 0:
         with lock:
             ganancias_del_dia = 0.0
@@ -96,8 +99,7 @@ def calcular_rsi(datos, periodo=14):
         rsi.append(100 - (100 / (1 + rs)) if pp else 100)
     return [None]*periodo + rsi
 
-
-# ======= FUNCIONES PARA OPERAR REALMENTE ========
+# ======= FUNCIONES PARA OPERAR ========
 
 def comprar_contrato(simbolo, direccion, volumen, duracion=5):
     global ws_global
@@ -115,17 +117,10 @@ def comprar_contrato(simbolo, direccion, volumen, duracion=5):
             "duration_unit": "m",
             "symbol": simbolo,
             "basis": "stake",
-            "barrier": None,
-            "date_expiry": None,
-            "date_start": None,
-            "limit_order": None,
-            "trailing_stop": None,
-            "stop_loss": None,
-            "take_profit": None,
         }
     }
+    print(f"Enviando orden: {direccion} {simbolo} volumen: {volumen}")
     ws_global.send(json.dumps(contrato))
-
 
 def abrir_operacion(simbolo, direccion, volumen, duracion=5):
     global ganancias_del_dia, operaciones_abiertas
@@ -139,17 +134,17 @@ def abrir_operacion(simbolo, direccion, volumen, duracion=5):
         operaciones_abiertas[simbolo] = {
             "direccion": direccion,
             "volumen": volumen,
-            "inicio": ahora_venezuela(),
+            "inicio": ahora_utc(),
             "duracion": duracion,
             "estado": "abierta",
             "contrato_id": None,
             "resultado": None,
         }
+    print(f"Intentando abrir operación: {simbolo} {direccion} volumen {volumen}")
     enviar_telegram(
-        f"🚀 Abriendo operación\nActivo: {simbolo}\nDirección: {'COMPRA' if direccion=='CALL' else 'VENTA'}\nVolumen: ${volumen}\nDuración: {duracion} minutos\nHora: {ahora_venezuela().strftime('%I:%M %p')}"
+        f"🚀 Abriendo operación\nActivo: {simbolo}\nDirección: {'COMPRA' if direccion=='CALL' else 'VENTA'}\nVolumen: ${volumen}\nDuración: {duracion} minutos\nHora UTC: {ahora_utc().strftime('%H:%M')}"
     )
     comprar_contrato(simbolo, direccion, volumen, duracion)
-
 
 def cerrar_operacion(simbolo, ganancia):
     global ganancias_del_dia
@@ -166,16 +161,14 @@ def cerrar_operacion(simbolo, ganancia):
         if ganancias_del_dia >= META_DIARIA:
             enviar_telegram(f"🎯 Meta diaria alcanzada: ${META_DIARIA}. Bot descansará.")
 
-
 # ======= PROCESAMIENTO DE RESPUESTAS DEL WEBSOCKET ========
 
 def procesar_respuesta(data):
-    global operaciones_abiertas
+    print("Respuesta WebSocket:", data)
     if "error" in data:
         print("Error en la respuesta:", data["error"]["message"])
         return
     if "buy" in data:
-        # Confirmación de compra
         contrato = data["buy"]
         simbolo = contrato.get("symbol")
         contrato_id = contrato.get("contract_id")
@@ -187,17 +180,11 @@ def procesar_respuesta(data):
                 if simbolo in operaciones_abiertas:
                     operaciones_abiertas[simbolo]["contrato_id"] = contrato_id
                     if is_sold:
-                        # Operación cerrada con resultado
-                        ganancias = profit
-                        cerrar_operacion(simbolo, ganancias)
+                        cerrar_operacion(simbolo, profit)
                     else:
                         print(f"Operación {simbolo} abierta con contrato ID {contrato_id}")
                 else:
                     print(f"Contrato recibido para {simbolo} pero sin operación abierta.")
-    elif "contract" in data:
-        # Otra estructura posible, revisar si se usa
-        pass
-
 
 # ======= WEBSOCKET ========
 
@@ -205,7 +192,6 @@ def on_message(ws, message):
     global precios_activos
     data = json.loads(message)
 
-    # Procesar ticks para actualizar precios
     if "tick" in data:
         simbolo = data["tick"]["symbol"]
         precio = data["tick"]["quote"]
@@ -215,31 +201,24 @@ def on_message(ws, message):
                 precios_activos[simbolo].pop(0)
             print(f"{simbolo}: precio recibido {precio}")
 
-    # Procesar respuestas a compras y actualizaciones de contratos
     if "buy" in data or "error" in data:
         procesar_respuesta(data)
 
-
 def on_error(ws, error):
     print("WebSocket error:", error)
-
 
 def on_close(ws, *args):
     print("WebSocket desconectado. Reintentando en 5s...")
     time.sleep(5)
     iniciar_websocket()
 
-
 def on_open(ws):
     global ws_global
     ws_global = ws
-    # Autorizar con token
     ws.send(json.dumps({"authorize": DERIV_TOKEN}))
     time.sleep(1)
-    # Suscribir ticks de todos los activos
     for activo in ACTIVOS:
         ws.send(json.dumps({"ticks": activo}))
-
 
 def iniciar_websocket():
     ws = websocket.WebSocketApp(
@@ -251,21 +230,19 @@ def iniciar_websocket():
     )
     ws.run_forever()
 
-
-# ======= SMS DE ESTADO CADA HORA ========
+# ======= NOTIFICACIONES HORARIAS ========
 
 def notificar_estado():
     while True:
-        ahora = ahora_venezuela()
+        ahora = ahora_utc()
         if ahora.minute == 0:
             estado = "ACTIVO y operando." if esta_en_horario() else "En descanso (fuera de horario operativo)."
-            enviar_telegram(f"🕐 {ahora.strftime('%I:%M %p')} (Hora Venezuela)\n🔔 Estado del Bot: {estado}")
+            enviar_telegram(f"🕐 {ahora.strftime('%H:%M')} UTC\n🔔 Estado del Bot: {estado}")
             time.sleep(60)
         else:
             time.sleep(30)
 
-
-# ======= LÓGICA DE ANÁLISIS Y OPERACIÓN ========
+# ======= ANÁLISIS Y OPERACIÓN ========
 
 def analizar_y_operar():
     if not esta_en_horario():
@@ -290,29 +267,26 @@ def analizar_y_operar():
             if simbolo not in operaciones_abiertas:
                 abrir_operacion(simbolo, direccion, VOLUMEN_FIJO)
 
-
-# ======= CICLO PRINCIPAL ========
+# ======= CICLOS PRINCIPALES ========
 
 def reiniciar_ganancias_diarias_periodico():
     while True:
         reiniciar_ganancias_diarias()
         time.sleep(60)
 
-
 def ciclo_operativo():
     while True:
+        reiniciar_ganancias_diarias()
         analizar_y_operar()
         time.sleep(300)
-
 
 # ======= EJECUCIÓN ========
 
 @app.route('/')
 def home():
-    return "Bot activo en Render."
-
+    return "Bot activo."
 if __name__ == "__main__":
-    enviar_telegram("✅ El bot de Deriv está activo y listo para enviar señales y abrir operaciones.")
+    enviar_telegram("✅ El bot de Deriv está activo y listo para enviar señales.")
     threading.Thread(target=iniciar_websocket, daemon=True).start()
     threading.Thread(target=notificar_estado, daemon=True).start()
     threading.Thread(target=ciclo_operativo, daemon=True).start()

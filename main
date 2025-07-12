@@ -1,0 +1,354 @@
+import websocket
+import json
+import threading
+import time
+import pytz
+import requests
+import os
+from datetime import datetime, timedelta
+
+from flask import Flask, request
+
+# ======= CONFIGURACIÓN ========
+DERIV_TOKEN = os.getenv("DERIV_TOKEN") or "UbQVaW5F4f7DWyM"  # Pon aquí tu token real o usa variable entorno
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "7996503475:AAG6mEPhRF5TlK_syTzmhKYWV_2ETpGkRXU"
+TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL") or "@yorihaly18"
+
+# Meta diaria
+META_DIARIA = 20.0
+capital_inicial = 22.00  # Puedes actualizar dinámicamente si quieres
+ganancias_diarias = 0.0
+
+# Volumen base y escalas si no permite
+VOLUMEN_BASE = 0.20
+VOLUMEN_ESCALAS = [0.20, 0.15, 0.10, 0.05]
+
+# Zona horaria
+tz_venezuela = pytz.timezone("America/Caracas")
+tz_utc = pytz.UTC
+
+# Horario para operar en UTC (11:00 AM a 1:00 AM UTC siguiente)
+HORA_INICIO_UTC = 11  # 11:00 AM UTC
+HORA_FIN_UTC = 1      # 01:00 AM UTC del día siguiente
+
+# Activos a operar
+ACTIVOS = [
+    "CRASH_1000", "CRASH_500", "CRASH_300", "CRASH_100",
+    "BOOM_1000", "BOOM_500", "BOOM_300", "BOOM_100",
+    "R_100", "R_75", "R_50", "R_25", "R_10"
+]
+
+# Flask app para uptime
+app = Flask(__name__)
+
+# Variables globales para WebSocket
+ws = None
+id_counter = 0
+operaciones_abiertas = {}  # contract_id: detalles
+
+# ================= FUNCIONES =================
+
+def enviar_telegram(mensaje: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHANNEL,
+        "text": mensaje,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print(f"Error enviando mensaje Telegram: {e}")
+
+def ahora_utc():
+    return datetime.utcnow().replace(tzinfo=tz_utc)
+
+def hora_venezuela(dt_utc):
+    return dt_utc.astimezone(tz_venezuela)
+
+def esta_dentro_horario_operacion():
+    ahora = ahora_utc()
+    hora_actual = ahora.hour
+    # Caso horario que cruza medianoche
+    if HORA_INICIO_UTC > HORA_FIN_UTC:
+        # Por ejemplo, 11 > 1 -> horario cruza medianoche
+        return hora_actual >= HORA_INICIO_UTC or hora_actual < HORA_FIN_UTC
+    else:
+        # Horario normal sin cruzar medianoche
+        return HORA_INICIO_UTC <= hora_actual < HORA_FIN_UTC
+
+def siguiente_id():
+    global id_counter
+    id_counter += 1
+    return id_counter
+
+def abrir_operacion(activo, direccion, duracion_minutos=3):
+    global ws
+    volumen = None
+
+    # Intentar volúmenes escalados
+    for vol in VOLUMEN_ESCALAS:
+        # Se prepara el request para comprar contrato real
+        params = {
+            "buy": 1,
+            "subscribe": 1,
+            "price": vol,
+            "parameters": {
+                "contract_type": "CALL" if direccion == "compra" else "PUT",
+                "duration": duracion_minutos,
+                "duration_unit": "m",
+                "symbol": activo,
+                "basis": "stake",
+                "currency": "USD"
+            }
+        }
+
+        msg = {
+            "authorize": DERIV_TOKEN,
+            "buy": 1
+        }
+
+        # Enviar orden de compra
+        req_id = siguiente_id()
+        request_msg = {
+            "buy": 1,
+            "subscribe": 1,
+            "price": vol,
+            "parameters": {
+                "contract_type": "CALL" if direccion == "compra" else "PUT",
+                "duration": duracion_minutos,
+                "duration_unit": "m",
+                "symbol": activo,
+                "basis": "stake",
+                "currency": "USD"
+            },
+            "passthrough": {},
+            "req_id": req_id
+        }
+
+        # Enviar por websocket
+        try:
+            ws.send(json.dumps(request_msg))
+            volumen = vol
+            break
+        except Exception as e:
+            print(f"No se pudo abrir operación con volumen {vol}: {e}")
+            continue
+
+    if volumen is None:
+        print("No se pudo abrir operación con ningún volumen permitido")
+        return None
+    return volumen
+
+def mensaje_inicio(cuenta_id, capital):
+    texto = (
+        "✅ *BOT ENCENDIDO*\n"
+        f"🆔 Cuenta conectada: {cuenta_id} (Real)\n"
+        f"💰 Capital disponible: ${capital:.2f}\n"
+        "📡 Estado: Conectado y operativo"
+    )
+    enviar_telegram(texto)
+
+def mensaje_operacion_abierta(activo, hora_utc, direccion, precio_entrada, volumen):
+    hora_ve = hora_venezuela(hora_utc)
+    texto = (
+        "✅ *OPERACIÓN ABIERTA*\n"
+        f"🧭 Activo: {activo}\n"
+        f"🕐 Hora: {hora_ve.strftime('%H:%M')} (Venezuela)\n"
+        f"📉 Dirección: {'COMPRA' if direccion == 'compra' else 'VENTA'}\n"
+        f"💵 Precio entrada: {precio_entrada}\n"
+        f"🔢 Volumen: {volumen:.2f}\n"
+        "🎯 Take Profit: Automático\n"
+        "🛡️ Stop Loss: Automático"
+    )
+    enviar_telegram(texto)
+
+def mensaje_operacion_cerrada(activo, resultado, entrada, salida, ganancia):
+    texto = (
+        "📤 *OPERACIÓN CERRADA*\n"
+        f"🧭 Activo: {activo}\n"
+        f"📈 Resultado: {'GANANCIA ✅' if resultado else 'PÉRDIDA ❌'}\n"
+        f"💵 Entrada: {entrada}\n"
+        f"💸 Salida: {salida}\n"
+        f"📊 Ganancia: ${ganancia:.2f}"
+    )
+    enviar_telegram(texto)
+
+def mensaje_progreso_diario(ganancias_actuales):
+    texto = (
+        f"📈 *Progreso diario*: ${ganancias_actuales:.2f} / ${META_DIARIA:.2f}"
+    )
+    enviar_telegram(texto)
+
+def mensaje_meta_alcanzada():
+    texto = (
+        "🎯 *META DIARIA ALCANZADA*\n"
+        f"✅ Ganancia total: ${META_DIARIA:.2f}\n"
+        "🔒 Bot detenido por hoy."
+    )
+    enviar_telegram(texto)
+
+def mensaje_resumen_diario(total_op, ganadoras, perdedoras, ganancia_neta):
+    hoy = ahora_utc().astimezone(tz_venezuela).strftime("%d-%b-%Y")
+    texto = (
+        "📊 *RESUMEN DEL DÍA*\n"
+        f"📌 Total operaciones: {total_op}\n"
+        f"✅ Ganadoras: {ganadoras}\n"
+        f"❌ Perdedoras: {perdedoras}\n"
+        f"💵 Ganancia neta: ${ganancia_neta:.2f}\n"
+        f"📅 Fecha: {hoy}"
+    )
+    enviar_telegram(texto)
+
+# ================= WEB SOCKET =================
+
+def on_message(wsapp, message):
+    global ganancias_diarias
+
+    msg = json.loads(message)
+    # Manejo de respuestas de autorización y conexión
+    if "error" in msg:
+        print("Error recibido:", msg["error"])
+        return
+
+    if "authorize" in msg:
+        if msg["authorize"]["is_authenticated"]:
+            cuenta_id = msg["authorize"]["account_id"]
+            print(f"Conectado a cuenta real: {cuenta_id}")
+            mensaje_inicio(cuenta_id, capital_inicial)
+        else:
+            print("No autenticado con token API.")
+        return
+
+    # Manejo de mensajes relacionados con contratos
+    if "buy" in msg:
+        contract = msg["buy"]
+        contract_id = contract["contract_id"]
+        activo = contract["symbol"]
+        direccion = "compra" if contract["contract_type"] == "CALL" else "venta"
+        precio_entrada = contract["buy_price"]
+        hora_operacion = ahora_utc()
+
+        operaciones_abiertas[contract_id] = {
+            "activo": activo,
+            "direccion": direccion,
+            "precio_entrada": precio_entrada,
+            "hora_apertura": hora_operacion,
+            "volumen": contract["stake"]
+        }
+
+        mensaje_operacion_abierta(activo, hora_operacion, direccion, precio_entrada, contract["stake"])
+        return
+
+    if "proposal_open_contract" in msg:
+        # Ignorar para este bot
+        return
+
+    if "tick" in msg:
+        # Ignorar ticks para esta versión
+        return
+
+    if "contract" in msg:
+        # Contrato cerrado
+        contrato = msg["contract"]
+        contract_id = contrato["id"]
+        if contract_id in operaciones_abiertas:
+            activo = operaciones_abiertas[contract_id]["activo"]
+            entrada = operaciones_abiertas[contract_id]["precio_entrada"]
+            salida = contrato["sell_price"]
+            ganancia = salida - entrada
+            resultado = ganancia > 0
+            ganancias_diarias += ganancia if ganancia > 0 else 0
+            mensaje_operacion_cerrada(activo, resultado, entrada, salida, ganancia)
+            mensaje_progreso_diario(ganancias_diarias)
+
+            # Si meta diaria alcanzada, detener bot
+            if ganancias_diarias >= META_DIARIA:
+                mensaje_meta_alcanzada()
+                print("Meta diaria alcanzada. Deteniendo bot.")
+                ws.close()
+            del operaciones_abiertas[contract_id]
+        return
+
+def on_error(wsapp, error):
+    print("Error en WebSocket:", error)
+
+def on_close(wsapp, close_status_code, close_msg):
+    print("WebSocket cerrado:", close_status_code, close_msg)
+
+def on_open(wsapp):
+    print("WebSocket conectado y listo para operar.")
+
+    # Solicitar autorización
+    auth_msg = {
+        "authorize": DERIV_TOKEN,
+        "req_id": siguiente_id()
+    }
+    wsapp.send(json.dumps(auth_msg))
+
+    # Suscribirse a ticks de activos si es necesario
+    # Aquí podrías suscribirte a datos para análisis (no implementado en este ejemplo)
+
+# ================= CICLO DE ANÁLISIS Y OPERACIÓN =================
+
+def analizar_y_operar():
+    # Aquí va tu lógica de análisis EMA + RSI para decidir compra o venta y activo
+    # Por simplicidad, este ejemplo abre operación con señal dummy si está dentro del horario
+    while True:
+        if ganancias_diarias >= META_DIARIA:
+            print("Meta diaria alcanzada, deteniendo análisis.")
+            break
+
+        if esta_dentro_horario_operacion():
+            # Aquí implementa tu lógica real EMA+RSI y señales
+
+            # Ejemplo de operación de prueba:
+            activo_prueba = "CRASH_300"
+            direccion_prueba = "venta"
+            duracion_min = 3
+
+            print(f"[{ahora_utc()}] Intentando abrir operación en {activo_prueba} dirección {direccion_prueba}")
+
+            # Aquí abrir operación real vía WebSocket (función pendiente de completar)
+            # abrir_operacion(activo_prueba, direccion_prueba, duracion_min)
+
+            # Por ahora solo espera 5 minutos para simular
+            time.sleep(300)
+        else:
+            print(f"[{ahora_utc()}] Fuera de horario operativo. Esperando...")
+            time.sleep(60)
+
+def hilo_websocket():
+    global ws
+    websocket.enableTrace(False)
+    ws = websocket.WebSocketApp("wss://ws.binaryws.com/websockets/v3?app_id=1089",
+                                on_open=on_open,
+                                on_message=on_message,
+                                on_error=on_error,
+                                on_close=on_close)
+    ws.run_forever()
+
+def hilo_analisis():
+    analizar_y_operar()
+
+# ================= FLASK PARA UPTIME =================
+@app.route('/')
+def index():
+    return "Bot Deriv Operativo"
+
+def main():
+    # Iniciar Flask en thread
+    flask_thread = threading.Thread(target=app.run, kwargs={"host":"0.0.0.0","port":8080})
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # Iniciar WebSocket
+    ws_thread = threading.Thread(target=hilo_websocket)
+    ws_thread.daemon = True
+    ws_thread.start()
+
+    # Iniciar análisis y operaciones
+    hilo_analisis()
+
+if __name__ == "__main__":
+    main()

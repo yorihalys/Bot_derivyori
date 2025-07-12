@@ -141,7 +141,9 @@ def abrir_operacion(simbolo, direccion, volumen, duracion=5):
         f"🚀 Abriendo operación\nActivo: {simbolo}\nDirección: {'COMPRA' if direccion=='CALL' else 'VENTA'}\nVolumen: ${volumen}\nDuración: {duracion} minutos\nHora UTC: {ahora_utc().strftime('%H:%M')}"
     )
     comprar_contrato(simbolo, direccion, volumen, duracion)
-
+# ====== FORZAR UNA OPERACIÓN DE PRUEBA =======
+time.sleep(3)  # Espera unos segundos a que se conecte el WebSocket
+abrir_operacion("CRASH600", "PUT", 0.20)
 def cerrar_operacion(simbolo, ganancia):
     global ganancias_del_dia
     with lock:

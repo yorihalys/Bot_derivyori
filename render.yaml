@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: bot-deriv-trading
+    env: python
+    buildCommand: ""
+    startCommand: ./start.sh
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
+    autoDeploy: true

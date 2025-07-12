@@ -22,10 +22,9 @@ HORARIOS_OPERACION = [
     (20, 0, 23, 0),
 ]
 ACTIVOS = [
-    "boom_100_index", "boom_500_index", "boom_600_index",
-    "crash_100_index", "crash_500_index", "crash_600_index",
-    "volatility_10_index", "volatility_25_index",
-    "volatility_50_index", "volatility_75_index"
+    "BOOM100", "BOOM300", "BOOM500", "BOOM600",
+    "CRASH100", "CRASH300", "CRASH500", "CRASH600",
+    "R_10", "R_25", "R_50", "R_75"
 ]
 
 
